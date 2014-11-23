@@ -1,0 +1,110 @@
+---
+title: "Predicting Activities"
+author: "J.P. de la Cruz"
+date: "23.11.2014"
+output: html_document
+---
+
+## Introduction
+
+The goal is to use data collected from sensors attached to a person's body in order
+to predict and evaluate the performed physical activity, which known as Human Activity
+Recognition.
+
+In this concrete project, we employ the data provided and described in the [HAR project
+website](http://groupware.les.inf.puc-rio.br/har). Concretely the data for the Weight Lifting Exercises Dataset. Please refer to the website for a detailed description of the data
+beign collected, and the features built upon the data sensors.
+
+## Preparing data
+
+First, there are a number of features which we need to discard because they mostly consist
+of undefined measurements, concretely, over 95% of the samples are missing.
+
+```{r, error = FALSE}
+library(plyr)
+library(dplyr)
+library(ggplot2)
+library(caret)
+
+traindata <- tbl_df(read.csv("pml-training.csv"))
+# discard non-informative features
+# check out how many values are defined per variable
+na.per.column <- sapply(names(traindata),function (colname) {
+  # sum(is.na(traindata[,colname]))/nentries
+  nentries <- nrow(traindata)
+  regexp <- paste("^", colname, "$", sep="")
+  traindata %>% select(matches(regexp)) %>% is.na %>% sum / nentries
+})
+# which features to work with
+features <- names(na.per.column[na.per.column < 0.8])
+```
+
+Also, there are some features which are strongly correlated to the rest, or more importantly,
+they provide information about the source of the data (subject, timestamp at which it was
+collected) but provide no predicitve power.
+
+It is specially important to discard the raw_timestamp feature, since it would wrongly make
+us believe that we can predict activity very well, since it is strongly correlated with the
+label (samples are collected sequentially: one subject after another, each performing one 
+activity at a time).
+
+```{r}
+# also, there are some other columns which provide no predictive information
+rem_col <- c("num_window","user_name","skewness","cvtd_timestamp","max_","min_","X",
+             "total_","kurtosis","amplitude_","raw_timestamp")
+regexp <- paste(c("(", paste(rem_col,collapse="|"), ")"), collapse = "")
+traindata <- traindata[,features[grep(regexp,features, invert = TRUE)]]
+```
+
+## Method
+
+We started by fitting a knn model to the data, in order to provide a baseline classifier
+to compare against. We employed 5-fold cross validation in order to look for a good value
+for the number of nearest neighbours. Data is scaled and centered.
+
+```{r}
+if (!file.exists("knn_model.RData"))
+{
+  ctrl <- trainControl(method="cv", number = 5, allowParallel = TRUE)
+  knnFit <- train(classe ~ ., preProcess = c("center","scale"), method = "knn",
+                trControl = ctrl, data = traindata, tuneLength = 5)
+  save(knnFit,file="knn_model.RData")
+} else {
+  load("knn_model.RData")
+}
+
+ggplot(knnFit)
+```
+
+Next we train a Gradient Boosting Model (GBM) on the data. GBM provide high accuracy and
+additional a ranking of the relevance of the different features.
+
+```{r}
+if (!file.exists("gbm_model.RData"))
+{
+  set.seed(123)
+  boostFit <- train(classe ~ ., method = "gbm", data = traindata, verbose = F,
+                    trControl = trainControl(method = "cv", number = 10))
+  save(boostFit,file="gbm_model.RData")
+} else {
+  load("gbm_model.RData")
+}
+
+ggplot(boostFit)
+```
+
+which yields a model with 97% accuracy on the data. Notice that event though the accuracy is
+similar to that of knn for k=5, we expect GBM to generalize better, since for lower values of
+k, kNN tends to overfit data, that is, it tends to be more sensitive to noise and outliers.
+
+Finally, we can inspect what ranking of features the GBM returns,
+```{r}
+varImp(boostFit)
+```
+
+It is interesting to see how pairs of related variables are among the most important, like
+roll_belt and yaw_belt, or y,z coordinates. They seems to provide a good parametrization of the movements as some plots suggest. As an example, consider the following plot,
+
+```{r}
+qplot(roll_belt,yaw_belt,colour=classe,data=traindata)
+```
